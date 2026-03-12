@@ -1,0 +1,45 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Model weights — too large for git (multi-GB files)
+*.safetensors
+*.bin
+*.gguf
+*.ggml
+
+# Merged model directories
+qwen3-8b-*-merged/
+qwen3-8b-*-lora/
+qwen3-8b-*/
+
+# Unsloth compiled cache
+unsloth_compiled_cache/
+
+# HuggingFace dataset cache
+~/.cache/huggingface/
+
+# Training checkpoints (keep only final adapter, not mid-run checkpoints)
+checkpoint-*/
+
+# Python environment
+.venv/
+fingpt-env/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and temp files
+*.log
+tmp.csv

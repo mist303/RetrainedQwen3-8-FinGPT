@@ -1,0 +1,13 @@
+# benchmark_results.json — populated after running scripts/benchmark.py
+# See docs/training.md for interpretation of these metrics.
+#
+# Reference scores from the published FinGPT paper:
+#
+# Task       | FinGPT v3.3 | BloombergGPT | GPT-4
+# -----------|-------------|--------------|-------
+# FPB        |    0.882    |    0.511     | 0.833
+# FiQA-SA    |    0.903    |      —       | 0.630
+# Headline   |   ~0.970    |      —       |   —
+#
+# Results will appear here after Round 2 training completes and
+# benchmark.py is executed.

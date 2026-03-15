@@ -18,11 +18,18 @@ qwen3-8b-*/
 # Unsloth compiled cache
 unsloth_compiled_cache/
 
-# HuggingFace dataset cache
+# HuggingFace dataset and model cache
 ~/.cache/huggingface/
 
-# Training checkpoints (keep only final adapter, not mid-run checkpoints)
+# Training checkpoints (keep only final adapter)
 checkpoint-*/
+qwen3-8b-round*/
+
+# RAG index — large binary files, rebuilt locally
+rag/index/
+
+# Conversation history — personal, not for repo
+history/
 
 # Python environment
 .venv/
@@ -43,3 +50,4 @@ Thumbs.db
 # Logs and temp files
 *.log
 tmp.csv
+merge_round*.py

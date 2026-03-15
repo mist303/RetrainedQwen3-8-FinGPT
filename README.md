@@ -1,128 +1,140 @@
 # FinGPT-Qwen3 — Self-Taught Financial AI Portfolio
 
 > Fine-tuning open-source LLMs on financial data for sentiment analysis,
-> Q&A, and stock forecasting — built on a consumer laptop with a single GPU.
+> Q&A, headline classification, and stock forecasting —
+> built on a consumer laptop with a single GPU.
 
 ---
 
 ## What This Project Is
 
-This is a personal portfolio project documenting my journey fine-tuning
-[Qwen3-8B](https://huggingface.co/unsloth/Qwen3-8B) on the
-[FinGPT](https://github.com/AI4Finance-Foundation/FinGPT) ecosystem datasets.
-
-The goal is to build a **multi-agent financial AI system** where each agent
-is a specialized LoRA adapter trained for a distinct financial NLP task —
-sentiment analysis, financial Q&A, headline classification, and eventually
-stock price forecasting.
-
-Everything here is trained on a **consumer laptop** (RTX 5070 Ti, 12GB VRAM,
-32GB RAM) using [Unsloth](https://github.com/unslothai/unsloth) for 2x faster
-training and 4-bit quantization to fit within VRAM constraints.
+A personal portfolio project documenting the design and training of a
+multi-agentic financial AI system where each agent is a specialized LoRA
+adapter fine-tuned on [FinGPT](https://github.com/AI4Finance-Foundation/FinGPT)
+ecosystem datasets. The system runs entirely locally on a consumer laptop (mine)
+using [Unsloth](https://github.com/unslothai/unsloth) for 2× faster training.
 
 ---
 
-## System Architecture
+## System Architecture (to be updated as I research more tools and architectures)
 
 ```
                         User Query
-                            │
-                            ▼
-                   ┌─────────────────┐
-                   │   Orchestrator  │  ← routes query to the right agent
-                   └────────┬────────┘
-                            │
-          ┌─────────────────┼─────────────────┐
-          ▼                 ▼                 ▼
-  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-  │   Agent 1    │  │   Agent 2    │  │   Agent 3    │
-  │  Sentiment   │  │  Multi-Task  │  │  Forecaster  │
-  │  Specialist  │  │  (QA+Hdln)   │  │  (Planned)   │
-  └──────────────┘  └──────────────┘  └──────────────┘
-          │                 │
-          └────────┬────────┘
-                   ▼
-          Shared Base Model
-          Qwen3-8B (frozen, 4bit)
+                              │
+                              ▼
+                     ┌─────────────────┐
+                     │   Orchestrator  │  keyword router
+                     └────────┬────────┘
+                              │
+                              ▼
+                     ┌─────────────────┐
+                     │    RAG Layer    │  FAISS vector search
+                     │                │  finance-domain embeddings
+                     │  ┌───────────┐ │  explicit status: OK / NO_MATCH /
+                     │  │   FAISS   │ │  LOW_CONFIDENCE / ERROR
+                     │  │  Index    │ │
+                     │  └───────────┘ │
+                     └────────┬────────┘
+                              │ enriched prompt
+                              ▼
+           ┌──────────────────┼──────────────────┐
+           ▼                  ▼                  ▼
+   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+   │  sentiment   │  │  multitask   │  │  forecaster  │
+   │  agent  r=8  │  │  agent r=16  │  │  (planned)   │
+   └──────────────┘  └──────────────┘  └──────────────┘
+           └──────────────────┘
+                      │
+                      ▼
+             Shared Base Model
+             Qwen3-8B (frozen, 4bit)
 ```
 
-All agents share the same frozen Qwen3-8B base in memory.
-At inference time, the orchestrator hot-swaps LoRA adapters
-(`.safetensors` files) — no model reload required between agents.
+All agents share the same frozen Qwen3-8B base in memory. The orchestrator
+hot-swaps LoRA adapters (~80MB each) at inference time — no model reload,
+no VRAM spike between agents (~5.6GB total vs ~22GB for 4 separate models).
 
 ---
 
-## Training Progress
+## Benchmark Results
 
-| Adapter | Base Model | Datasets | Status | Tasks |
+to be updated
+
+---
+
+## Agent Details
+
+| Agent | Adapter | Training Data | Tasks | Status |
 |---|---|---|---|---|
-| `adapter_round1` | Qwen3-8B | fingpt-sentiment-train | ✅ Done | Sentiment |
-| `adapter_round2` | Qwen3-8B | sentiment + fiqa_qa + headline | 🔄 Training | Sentiment, Q&A, Headline |
-| `adapter_finred` | Qwen3-8B | fingpt-finred | 📋 Planned | Relation Extraction |
-| `adapter_forecaster` | Qwen3-8B | fingpt-forecaster-dow30 | 📋 Planned | Price Forecasting |
+| `sentiment` | `qwen3-8b-fingpt-lora` | fingpt-sentiment-train (76.8K) | Sentiment | ✅ Done |
+| `multitask` | `qwen3-8b-round2-lora` | sentiment + fiqa_qa + headline (174K) | Sentiment, Q&A, Headline | ✅ Done |
+| `forecaster` | `qwen3-8b-round3-lora` | fingpt-forecaster-dow30 | Price Forecasting | 📋 Planned |
 
-### Round 2 Training Details
+### Round 2 Training Config
 
 ```
-Model:       Qwen3-8B (unsloth 4bit)
-LoRA rank:   r=16, alpha=16
-Datasets:    fingpt-sentiment-train (76.8K) +
-             fingpt-fiqa_qa (17.1K) +
-             fingpt-headline (82.2K)
-             ────────────────────────────
-             Total: ~174K samples
-Epochs:      1
-Batch size:  2 (device) × 8 (grad accum) = 16 effective
-Warmup:      200 steps
-Total steps: 10,888
-Hardware:    RTX 5070 Ti (12GB VRAM), 32GB RAM
-Optimizer:   paged_adamw_8bit
-Precision:   bf16
+Base model:   Qwen3-8B (unsloth 4bit)
+LoRA rank:    r=16, alpha=16
+Datasets:     fingpt-sentiment-train (76.8K) +
+              fingpt-fiqa_qa (17.1K) +
+              fingpt-headline (82.2K)
+              ─────────────────────────────
+              Total: ~174K samples
+Epochs:       1  (10,888 steps)
+Batch size:   2 (device) × 8 (grad accum) = 16 effective
+Optimizer:    paged_adamw_8bit
+Precision:    bf16
+Hardware:     RTX 5070 Ti Laptop, 12GB VRAM
+Duration:     ~24 hours
 ```
+
+---
+
+## RAG Layer
+
+The RAG layer enriches queries with retrieved financial context before they
+reach any agent. It uses a local FAISS vector store with
+`FinLang/finance-embeddings-investopedia` — a finance-domain fine-tune of
+MiniLM-L6-v2 that correctly maps financial jargon (EBITDA, yield curve,
+basis points, P/E, WACC) in embedding space.
+
+**Data sources:**
+- Local `.txt`, `.pdf`, `.md` files
+- Directory bulk ingestion
+- Live market data via `yfinance` — current snapshot, quarterly earnings
+  history (8 quarters), annual financials (4 years), recent news headlines
+
+**Failure handling:** every retrieval returns an explicit `RAGStatus` enum
+(`OK`, `EMPTY_INDEX`, `NO_MATCH`, `LOW_CONFIDENCE`, `ERROR`) — the orchestrator
+reacts to each case explicitly with no silent fallbacks.
 
 ---
 
 ## Key Design Decisions
 
 **Why separate LoRA adapters instead of one big model?**
-Mixing tasks like sentiment classification (rigid output) and open-ended Q&A
-(generative) in a single training run causes task interference — the model
-learns to be mediocre at both. Separate adapters stay specialized and can be
-individually retrained when new data arrives, without touching other agents.
+Mixing rigid classification (sentiment) with open-ended generation (Q&A) and
+binary prediction (headline) in a single training run causes task interference.
+Separate adapters stay specialized and can be individually retrained as new
+data arrives without touching other agents.
 
 **Why Qwen3-8B?**
-Qwen3 is the latest generation with strong multilingual support and a 32k
-context window. It's a natural fit for financial text which often contains
-mixed-language content and long-form analysis.
+Qwen3 includes a native thinking mode (`<think>...</think>`) — the model
+reasons through financial problems before answering. For forecasting and
+analysis tasks, this chain-of-thought reasoning is a meaningful advantage
+over earlier models that output one word directly.
 
-**Why Unsloth?**
-2x faster training + gradient checkpointing + 4-bit quantization makes
-training a 8B model feasible on 12GB VRAM. Without it, this project wouldn't
-run on consumer hardware at all.
+**Why benchmark at orchestrator level?**
+FinGPT publishes scores for their deployed system, not isolated adapters.
+Benchmarking at orchestrator level produces comparable numbers and also
+validates that routing is working correctly — the `routing` field in every
+result confirms which agent handled each task.
 
-**Why build this locally instead of using the API?**
+**Why local instead of API?**
 The whole point is to own the weights. A locally-trained adapter can be
-updated weekly with new financial data for under $1 in electricity.
-BloombergGPT cost $2.67M to train. FinGPT-style lightweight adaptation
-brings that down to under $300. This project brings it down further to
-a consumer GPU.
-
----
-
-## Benchmark Results
-
-Benchmarks run using the official FinGPT evaluation methodology
-(sklearn F1 Weighted, matching the BloombergGPT comparison metric).
-
-> Results will be populated after Round 2 training completes.
-> See `results/benchmark_results.json` for raw output.
-
-| Task | Dataset | Round 2 Score | FinGPT Reference | BloombergGPT |
-|---|---|---|---|---|
-| Sentiment | FPB | _pending_ | 0.882 | 0.511 |
-| Sentiment | FiQA-SA | _pending_ | 0.903 | — |
-| Headline | fingpt-headline | _pending_ | ~0.970 | — |
-| Q&A | fiqa_qa (keyword) | _pending_ | — | — |
+updated weekly with new financial data. BloombergGPT cost $2.67M to train.
+FinGPT brought that down to ~$300. This project brings it down further to
+a consumer GPU and one electricity bill.
 
 ---
 
@@ -131,45 +143,53 @@ Benchmarks run using the official FinGPT evaluation methodology
 ```
 FinGPT-Portfolio/
 │
-├── README.md                  ← You are here
+├── README.md
+│
+├── orchestrator.py            ← Production orchestrator (classify → RAG → agent)
+│
+├── rag/
+│   ├── __init__.py
+│   ├── retriever.py           ← FAISS vector store + finance embeddings
+│   └── rag_layer.py           ← RAG enrichment + explicit status handling
 │
 ├── scripts/
-│   ├── round1.py              ← Round 1 sentiment specialist training + merge
-│   ├── round2.py              ← Round 2 multi-task training + merge
-│   └── benchmark.py           ← Official FinGPT benchmark evaluation
+│   ├── round1.py              ← Round 1 sentiment specialist training
+│   ├── round2.py              ← Round 2 multi-task training
+│   └── benchmark.py           ← Orchestrator-level benchmark (full pipeline)
 │
 ├── docs/
-│   ├── architecture.md        ← Full multi-agent system design
-│   ├── training.md            ← Training decisions, configs, lessons learned
-│   └── roadmap.md             ← What comes next
+│   ├── architecture.md        ← Full system design with diagrams
+│   ├── roadmap.md             ← What's done, in progress, and planned
+│   └── orchestrator_requirements.md  ← Full SRS for CLI + UI + ingestion
 │
 └── results/
-    └── benchmark_results.json ← Benchmark output (populated after eval)
+    └── benchmark_results.json ← Benchmark output with routing metadata
 ```
 
 ---
 
 ## Roadmap
 
-See [`docs/roadmap.md`](docs/roadmap.md) for the full plan.
-
-Short version:
 - [x] Round 1: Sentiment specialist adapter
-- [ ] Round 2: Multi-task adapter (sentiment + Q&A + headline)
-- [ ] Benchmark & compare adapters against FinGPT reference scores
-- [ ] Round 3: Relation extraction adapter (fingpt-finred)
-- [ ] Orchestrator: Router that selects the right adapter per query
-- [ ] Forecaster: Stock price movement prediction (fingpt-forecaster-dow30)
-- [ ] RAG layer: Real-time news injection via FinGPT-RAG
+- [x] Round 2: Multi-task adapter (sentiment + Q&A + headline)
+- [x] RAG layer with FAISS + finance-domain embeddings
+- [x] Orchestrator with keyword routing + explicit RAG status
+- [x] Benchmark at orchestrator level vs FinGPT reference
+- [ ] CLI (Typer) — interactive, batch, index management
+- [ ] Gradio chat UI
+- [ ] Round 3: Forecaster adapter (fingpt-forecaster-dow30)
+- [ ] HuggingFace Space for public demo
 
 ---
 
 ## Built On
 
 - [FinGPT](https://github.com/AI4Finance-Foundation/FinGPT) — AI4Finance Foundation
-- [Unsloth](https://github.com/unslothai/unsloth) — 2x faster fine-tuning
-- [Qwen3](https://huggingface.co/Qwen/Qwen3-8B) — Alibaba Cloud
+- [Unsloth](https://github.com/unslothai/unsloth) — 2× faster fine-tuning
+- [Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B) — Alibaba Cloud
 - [HuggingFace PEFT](https://github.com/huggingface/peft) — LoRA implementation
+- [FAISS](https://github.com/facebookresearch/faiss) — vector similarity search
+- [FinLang embeddings](https://huggingface.co/FinLang/finance-embeddings-investopedia) — finance-domain retrieval
 
 ---
 
@@ -177,3 +197,4 @@ Short version:
 
 This project is for educational and portfolio purposes only.
 Nothing here constitutes financial advice or a recommendation to trade.
+Do not make trading or investment decisions based on this system's output.

@@ -9,14 +9,17 @@
 ## What This Project Is
 
 A personal portfolio project documenting the design and training of a
-multi-agentic financial AI system where each agent is a specialized LoRA
+multi-agent financial AI system where each agent is a specialized LoRA
 adapter fine-tuned on [FinGPT](https://github.com/AI4Finance-Foundation/FinGPT)
-ecosystem datasets. The system runs entirely locally on a consumer laptop (mine)
+ecosystem datasets. The system runs entirely locally on a consumer laptop
 using [Unsloth](https://github.com/unslothai/unsloth) for 2× faster training.
+
+The core idea: instead of one model that does everything poorly, route each
+financial query to the specialist adapter that was trained for exactly that task.
 
 ---
 
-## System Architecture (to be updated as I research more tools and architectures)
+## System Architecture
 
 ```
                         User Query
@@ -58,34 +61,51 @@ no VRAM spike between agents (~5.6GB total vs ~22GB for 4 separate models).
 
 ## Benchmark Results
 
-to be updated
+to be added
 
 ---
 
 ## Agent Details
 
-| Agent | Adapter | Training Data | Tasks | Status |
+| Agent | Tasks | Training Data | Config | Status |
 |---|---|---|---|---|
-| `sentiment` | `qwen3-8b-fingpt-lora` | fingpt-sentiment-train (76.8K) | Sentiment | ✅ Done |
-| `multitask` | `qwen3-8b-round2-lora` | sentiment + fiqa_qa + headline (174K) | Sentiment, Q&A, Headline | ✅ Done |
-| `forecaster` | `qwen3-8b-round3-lora` | fingpt-forecaster-dow30 | Price Forecasting | 📋 Planned |
+| `sentiment` | Sentiment classification | fingpt-sentiment-train (76.8K) | r=8, alpha=8, 1 epoch | ✅ Done |
+| `multitask` | Financial Q&A, Headline classification | fingpt-fiqa_qa (17.1K) + fingpt-headline (82.2K) | r=16, alpha=32, 3 epochs | 🔄 Retraining |
+| `forecaster` | Stock price forecasting | fingpt-forecaster-dow30 | r=16, alpha=32 | 📋 Planned |
 
-### Round 2 Training Config
+### Why these boundaries?
+
+**`sentiment`** handles all sentiment classification tasks (FPB, FiQA-SA).
+It was trained exclusively on sentiment data so it stays sharp on that one
+output format — one word: `positive`, `neutral`, or `negative`.
+
+**`multitask`** handles open-ended financial Q&A and binary headline
+classification. Sentiment data was deliberately excluded from its training.
+Early benchmarks showed including sentiment caused 2.6pp task interference
+on FiQA-SA — the agent performed worse on sentiment than the specialist
+despite seeing the same data. Keeping these agents separate is not just
+architectural preference — it's empirically validated by the benchmark results.
+
+**`forecaster`** will handle multi-paragraph stock price prediction given
+news and financials. Its output format (structured analysis + prediction) is
+incompatible with the other agents' training data, so it gets its own adapter.
+
+### `multitask` Training Config (current retraining run)
 
 ```
 Base model:   Qwen3-8B (unsloth 4bit)
-LoRA rank:    r=16, alpha=16
-Datasets:     fingpt-sentiment-train (76.8K) +
-              fingpt-fiqa_qa (17.1K) +
+LoRA rank:    r=16, alpha=32
+Datasets:     fingpt-fiqa_qa  (17.1K)
               fingpt-headline (82.2K)
               ─────────────────────────────
-              Total: ~174K samples
-Epochs:       1  (10,888 steps)
+              Total: ~99.3K samples
+              (sentiment excluded — owned by the sentiment agent)
+Epochs:       3
 Batch size:   2 (device) × 8 (grad accum) = 16 effective
 Optimizer:    paged_adamw_8bit
 Precision:    bf16
 Hardware:     RTX 5070 Ti Laptop, 12GB VRAM
-Duration:     ~24 hours
+Checkpoints:  every ~10% (~4h intervals) — safe to stop and resume
 ```
 
 ---
@@ -115,6 +135,8 @@ reacts to each case explicitly with no silent fallbacks.
 **Why separate LoRA adapters instead of one big model?**
 Mixing rigid classification (sentiment) with open-ended generation (Q&A) and
 binary prediction (headline) in a single training run causes task interference.
+Benchmarks confirmed this empirically — the sentiment specialist outperforms
+the multi-task agent on sentiment tasks despite seeing the same training data.
 Separate adapters stay specialized and can be individually retrained as new
 data arrives without touching other agents.
 
@@ -153,9 +175,10 @@ FinGPT-Portfolio/
 │   └── rag_layer.py           ← RAG enrichment + explicit status handling
 │
 ├── scripts/
-│   ├── round1.py              ← Round 1 sentiment specialist training
-│   ├── round2.py              ← Round 2 multi-task training
-│   └── benchmark.py           ← Orchestrator-level benchmark (full pipeline)
+│   ├── sentiment_agent.py     ← Sentiment agent training
+│   ├── multitask_agent.py     ← Multitask agent training (Q&A + Headline)
+│   ├── benchmark.py           ← Orchestrator-level benchmark (full pipeline)
+│   └── round1.py / round2.py  ← Original training runs (archived reference)
 │
 ├── docs/
 │   ├── architecture.md        ← Full system design with diagrams
@@ -170,14 +193,14 @@ FinGPT-Portfolio/
 
 ## Roadmap
 
-- [x] Round 1: Sentiment specialist adapter
-- [x] Round 2: Multi-task adapter (sentiment + Q&A + headline)
+- [x] `sentiment` agent trained and benchmarked
 - [x] RAG layer with FAISS + finance-domain embeddings
 - [x] Orchestrator with keyword routing + explicit RAG status
 - [x] Benchmark at orchestrator level vs FinGPT reference
+- [ ] `multitask` agent retraining (Q&A + Headline only, 3 epochs) — in progress
 - [ ] CLI (Typer) — interactive, batch, index management
 - [ ] Gradio chat UI
-- [ ] Round 3: Forecaster adapter (fingpt-forecaster-dow30)
+- [ ] `forecaster` agent (fingpt-forecaster-dow30)
 - [ ] HuggingFace Space for public demo
 
 ---

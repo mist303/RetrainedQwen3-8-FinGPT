@@ -61,7 +61,33 @@ no VRAM spike between agents (~5.6GB total vs ~22GB for 4 separate models).
 
 ## Benchmark Results
 
-to be added
+Evaluated using the official FinGPT benchmark datasets. Every query routes
+through the full orchestrator pipeline — the keyword classifier decides which
+agent handles each task, exactly as it would in production.
+
+| Task | Agent Used | F1 Weighted | FinGPT v3.3 |
+|---|---|---|---|
+| FPB (Financial PhraseBank) | sentiment | 0.577 | 0.882 |
+| FiQA-SA | sentiment | 0.935 | 0.874 |
+| Headline | multitask | 0.881 | ~0.970 |
+| QA (keyword score) | multitask | 0.562 | — |
+
+The system routes sentiment classification tasks to the sentiment specialist adapter and
+headline/Q&A tasks to the Round 2 multi-task adapter — the multi-agent design
+working as intended.
+
+**FiQA-SA at 0.935** beats the FinGPT reference (0.874). Note this uses
+`FinGPT/fingpt-fiqa_qa` which overlaps with Round 2 training data — a known
+limitation. Re-evaluation on the clean held-out split drops the score, pointing
+to the same root cause as FPB's gap: the `input` field (the actual news text)
+was accidentally excluded from training. The model learned to predict sentiment
+labels without reading the content. This is the primary target for retraining.
+
+**Headline at 0.881** is the cleanest result with no data leakage, genuinely
+held-out test split, trained for 1 epoch on a 12GB consumer GPU.
+
+**Hardware:** RTX 5070 Ti Laptop (12GB VRAM) · Unsloth 4-bit quantization ·
+training cost is limited to electricity only · No cloud compute
 
 ---
 

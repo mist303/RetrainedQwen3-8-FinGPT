@@ -1,62 +1,35 @@
-# round2.py — Round 2 Multi-Task LoRA Training
-# Trains Qwen3-8B from scratch on three FinGPT datasets:
-#   - fingpt-sentiment-train (76.8K)
-#   - fingpt-fiqa_qa (17.1K)
-#   - fingpt-headline (82.2K)
-# Produces a single independent adapter: ./qwen3-8b-round2-lora/
-# Hardware target: RTX 5070 Ti (12GB VRAM), 32GB RAM, Windows 11
-
 import os
 import multiprocessing
 import gc
 
-# Set CUDA memory allocator to use expandable segments.
-# This reduces fragmentation when batch sizes vary between steps.
+# Maximize memory efficiency before PyTorch initializes
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 from unsloth import FastLanguageModel, is_bfloat16_supported
 import torch
 from datasets import load_dataset, concatenate_datasets
-from trl import SFTTrainer
-from transformers import TrainingArguments
+from transformers import TrainingArguments, Trainer, DataCollatorForLanguageModeling
 
-# Lower process priority so the laptop stays usable during the multi-hour run
+# Optional but highly recommended for background laptop training
 try:
     import psutil
     p = psutil.Process(os.getpid())
-    p.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+    # Lowers priority so your laptop doesn't freeze while training
+    p.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS) 
 except ImportError:
     print("Tip: 'pip install psutil' to enable background priority management.")
 
 
-# ── GLOBAL SCOPE: Required for Windows multiprocessing ────────────────────────
-# On Windows, dataset.map() with num_proc > 1 spawns new processes.
-# Functions and constants used inside those processes must be at module level,
-# not inside __main__, or Windows will fail to pickle them.
-
-SYSTEM = (
-    "You are an expert financial analyst. "
-    "Reason carefully, cite your logic, and provide structured, professional analysis."
-)
-
+# ── GLOBAL FUNCTIONS: MOVED OUTSIDE __main__ FOR WINDOWS MULTIPROCESSING ──────
+SYSTEM = ("You are an expert financial analyst. "
+          "Reason carefully, cite your logic, and provide structured, professional analysis.")
 
 def process_and_filter(sample, tokenizer):
-    """
-    Format a single dataset sample into Qwen3's chat template and check length.
-    Returns the formatted text plus a boolean flag for filtering.
-
-    The chat template wraps the instruction/output in:
-      <|im_start|>system ... <|im_end|>
-      <|im_start|>user   ... <|im_end|>
-      <|im_start|>assistant ... <|im_end|>
-
-    We filter out any sample whose total token count exceeds 512 to prevent
-    truncation from corrupting gradient signals during training.
-    """
+    # Handle dict edge cases safely
     instruction = str(sample.get("instruction", "") or "")
-    output      = str(sample.get("output", "")      or "")
-
+    output = str(sample.get("output", "") or "")
+    
     text = tokenizer.apply_chat_template(
         [
             {"role": "system",    "content": SYSTEM},
@@ -66,46 +39,54 @@ def process_and_filter(sample, tokenizer):
         tokenize=False,
         add_generation_prompt=False,
     )
-
+    
+    # Tokenize once to get both the length and prepare for filtering
     token_len = len(tokenizer(text, truncation=False)["input_ids"])
-
+    
     return {
-        "text":         text,
-        "valid_length": token_len <= 512 and text.strip() != "",
+        "text": text,
+        "valid_length": token_len <= 512 and text.strip() != ""
     }
 
-
 def prepare(ds, tokenizer, cores):
-    """
-    Apply chat template formatting and filter out over-length samples.
-    Uses multiple CPU cores for parallel processing (capped for Windows stability).
-    """
+    # Format and filter samples
     ds = ds.map(process_and_filter, fn_kwargs={"tokenizer": tokenizer}, num_proc=cores)
     ds = ds.filter(lambda s: s["valid_length"], num_proc=cores)
-    return ds.select_columns(["text"])
+    ds = ds.select_columns(["text"])
+    return ds
 
 
-# ── MAIN ──────────────────────────────────────────────────────────────────────
+def pre_tokenize(sample, tokenizer):
+    """
+    Pre-tokenize each sample into input_ids only.
+    Labels are NOT set here — DataCollatorForLanguageModeling handles that
+    at collation time by copying input_ids → labels and masking padding with -100.
+    This is the correct pattern for CLM training with pre-tokenized data.
+    """
+    ids = tokenizer(
+        sample["text"],
+        truncation=True,
+        max_length=512,
+        padding=False,
+    )["input_ids"]
+    return {"input_ids": ids}
+
+
+# ── WINDOWS GUARD REQUIRED FOR MULTIPROCESSING ────────────────────────────────
 if __name__ == "__main__":
-
-    # Cap CPU cores: Windows throws WinError 1455 if too many worker processes
-    # are spawned simultaneously. 4 is safe on most modern laptops.
-    SAFE_CORES = min(4, multiprocessing.cpu_count() - 2)
+    
+    # Cap cores on Windows to prevent WinError 1455 and keep the system responsive
+    SAFE_CORES = min(4, multiprocessing.cpu_count() - 2) 
 
     # ── Step 1: Load base model ───────────────────────────────────────────────
-    # 4-bit quantization keeps the 8B model within 6GB VRAM.
-    # dtype=None lets Unsloth auto-select bf16 (optimal for RTX 5070 Ti).
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name="unsloth/Qwen3-8B",
-        max_seq_length=512,
+        max_seq_length=512,  # must match pre_tokenize truncation length
         dtype=None,
         load_in_4bit=True,
     )
 
-    # ── Step 2: Attach fresh LoRA scaffold ───────────────────────────────────
-    # r=16 (vs r=8 in Round 1) gives more adapter capacity for 3 different tasks.
-    # All base model weights remain frozen — only the LoRA matrices are trained.
-    # Trainable params: ~43M out of 8.2B total (~0.53%)
+    # ── Step 2: Attach LoRA adapters ──────────────────────────────────────────
     model = FastLanguageModel.get_peft_model(
         model,
         r=16,
@@ -114,69 +95,101 @@ if __name__ == "__main__":
         lora_alpha=16,
         lora_dropout=0,
         bias="none",
-        use_gradient_checkpointing="unsloth",  # trades compute for VRAM
+        use_gradient_checkpointing="unsloth",  # re-enabled: faster than disabled
         random_state=42,
     )
 
-    # ── Step 3: Load all three datasets ──────────────────────────────────────
+    # ── Step 3: Load datasets in parallel ────────────────────────────────────
     print("Loading datasets...")
-    ds_sentiment = load_dataset("FinGPT/fingpt-sentiment-train", split="train")
-    ds_fiqa      = load_dataset("FinGPT/fingpt-fiqa_qa",         split="train")
-    ds_headline  = load_dataset("FinGPT/fingpt-headline",        split="train")
+    from concurrent.futures import ThreadPoolExecutor
+    
+    def load_single_dataset(name_and_path):
+        return load_dataset(name_and_path[1], split="train")
+    
+    datasets_info = [
+        ("sentiment", "FinGPT/fingpt-sentiment-train"),
+        ("fiqa", "FinGPT/fingpt-fiqa_qa"),
+        ("headline", "FinGPT/fingpt-headline"),
+    ]
+    
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        loaded_datasets = list(executor.map(load_single_dataset, datasets_info))
+    
+    ds_sentiment, ds_fiqa, ds_headline = loaded_datasets
 
-    # ── Step 4: Format and filter ─────────────────────────────────────────────
+    # ── Step 4: Format, filter, pre-tokenize ─────────────────────────────────
     print("Formatting and filtering datasets...")
-    dataset = concatenate_datasets([
-        prepare(ds_sentiment, tokenizer, SAFE_CORES),
-        prepare(ds_fiqa,      tokenizer, SAFE_CORES),
-        prepare(ds_headline,  tokenizer, SAFE_CORES),
-    ]).shuffle(seed=42)
+    dataset = concatenate_datasets([ds_sentiment, ds_fiqa, ds_headline])
+    dataset = prepare(dataset, tokenizer, SAFE_CORES).shuffle(seed=42)
     print(f"Final dataset ready: {len(dataset)} rows")
 
-    # ── Step 5: Train ─────────────────────────────────────────────────────────
+    # Pre-tokenize the entire dataset into input_ids before training.
+    # Moves all CPU tokenization work out of the training loop entirely.
+    # The DataLoader will only batch integers at train time — GPU never waits.
+    print("Pre-tokenizing dataset (one-time cost, much faster training after)...")
+    dataset = dataset.map(
+        pre_tokenize,
+        fn_kwargs={"tokenizer": tokenizer},
+        num_proc=1,              # must be 1 — multiprocessing re-imports Unsloth on Windows
+        remove_columns=["text"],
+    )
+    dataset.set_format(type="torch", columns=["input_ids"])
+    print(f"Pre-tokenization complete. Ready to train.")
+
+    # ── Step 7: Train ─────────────────────────────────────────────────────────
+    # Clear VRAM before starting the run
     torch.cuda.empty_cache()
 
-    trainer = SFTTrainer(
+    # DataCollatorForLanguageModeling handles label creation at collation time:
+    # it copies input_ids → labels and sets padding positions to -100 (ignored by loss).
+    # This is the correct pattern for pre-tokenized CLM data and avoids the
+    # SFTTrainer internal label manipulation that caused the 512 vs 524 shape crash.
+    collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=False,   # CLM (causal), not masked language modelling
+    )
+
+    trainer = Trainer(
         model=model,
         tokenizer=tokenizer,
         train_dataset=dataset,
-        dataset_text_field="text",
-        max_seq_length=512,
-        packing=True,           # packs short sequences together for GPU efficiency
+        data_collator=collator,
         args=TrainingArguments(
-            per_device_train_batch_size=2,   # fits with 4bit Qwen3-8B on 12GB
-            gradient_accumulation_steps=8,   # effective batch = 2 × 8 = 16
-            warmup_steps=200,                # scaled for ~174K row dataset
+            per_device_train_batch_size=2,
+            gradient_accumulation_steps=8,   # effective batch = 16
+            warmup_steps=200,
             num_train_epochs=1,
-            learning_rate=1e-4,
+            learning_rate=5e-5,
             fp16=not is_bfloat16_supported(),
-            bf16=is_bfloat16_supported(),    # RTX 5070 Ti supports bf16 natively
-            logging_steps=25,
-            save_strategy="epoch",
+            bf16=is_bfloat16_supported(),
+            logging_steps=100,
+            save_strategy="steps",
+            save_steps=1000,
+            save_total_limit=3,
             output_dir="./qwen3-8b-round2",
-            optim="paged_adamw_8bit",        # keeps optimizer state in CPU RAM
+            optim="paged_adamw_8bit",
             report_to="none",
-            dataloader_num_workers=2,
-            average_tokens_across_devices=False,
+            dataloader_num_workers=0,        # must be 0 on Windows — workers re-init Unsloth
+            dataloader_pin_memory=False,
         ),
     )
 
     trainer.train()
 
-    # ── Step 6: Save LoRA adapter ─────────────────────────────────────────────
-    # Saves only the adapter weights (~80MB), not the full 16GB merged model.
+    # ── Step 8: Save LoRA adapter ─────────────────────────────────────────────
     model.save_pretrained("./qwen3-8b-round2-lora")
     tokenizer.save_pretrained("./qwen3-8b-round2-lora")
     print("Round 2 LoRA adapter saved.")
 
-    # ── Step 7: Merge and export ──────────────────────────────────────────────
-    # Merge LoRA weights into the base model and save as float16.
-    # This is needed for GGUF conversion via llama.cpp for local inference.
+    # ── Step 9: Merge & export ────────────────────────────────────────────────
+    print("Cleaning up memory before 16-bit merge...")
+    # Delete trainer and dataset from RAM to free up space for the merge
     del trainer
     del dataset
     gc.collect()
     torch.cuda.empty_cache()
 
+    print("Merging model to 16-bit (This takes significant RAM)...")
     model.save_pretrained_merged(
         "./qwen3-8b-round2-merged",
         tokenizer,

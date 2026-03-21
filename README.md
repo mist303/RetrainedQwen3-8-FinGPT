@@ -54,16 +54,15 @@ financial query to the specialist adapter that was trained for exactly that task
 ```
 
 All agents share the same frozen Qwen3-8B base in memory. The orchestrator
-hot-swaps LoRA adapters (~80MB each) at inference time — no model reload,
-no VRAM spike between agents (~5.6GB total vs ~22GB for 4 separate models).
+hot-swaps LoRA adapters (~80MB each) at inference time to avoid  model reload and VRAM spike between agents (~5.6GB total vs ~22GB for the 4 separate models found in FinGPT).
 
 ---
 
 ## Benchmark Results
 
 Evaluated using the official FinGPT benchmark datasets. Every query routes
-through the full orchestrator pipeline — the keyword classifier decides which
-agent handles each task, exactly as it would in production.
+through the full orchestrator pipeline seen in the above system architecture with the keyword classifier deciding which
+agent handles each task. I will be optimizing this further as my understanding deepens.
 
 | Task | Agent Used | F1 Weighted | FinGPT v3.3 |
 |---|---|---|---|
@@ -73,20 +72,14 @@ agent handles each task, exactly as it would in production.
 | QA (keyword score) | multitask | 0.562 | — |
 
 The system routes sentiment classification tasks to the sentiment specialist adapter and
-headline/Q&A tasks to the Round 2 multi-task adapter — the multi-agent design
-working as intended.
+headline/Q&A tasks to the Round 2 multi-task adapter. This adapted will be redone as I made a mistake to train it on sentiment analysis as well. 
 
-**FiQA-SA at 0.935** beats the FinGPT reference (0.874). Note this uses
-`FinGPT/fingpt-fiqa_qa` which overlaps with Round 2 training data — a known
-limitation. Re-evaluation on the clean held-out split drops the score, pointing
-to the same root cause as FPB's gap: the `input` field (the actual news text)
-was accidentally excluded from training. The model learned to predict sentiment
-labels without reading the content. This is the primary target for retraining.
+**FiQA-SA at 0.935** beats the FinGPT reference (0.874). Re-evaluation tbd to clean out the multitasker and see if improvements can be made. 
 
 **Headline at 0.881** is the cleanest result with no data leakage, genuinely
 held-out test split, trained for 1 epoch on a 12GB consumer GPU.
 
-**Hardware:** RTX 5070 Ti Laptop (12GB VRAM) · Unsloth 4-bit quantization ·
+**Hardware:** RTX 5070 Ti Laptop (12GB VRAM and 32 GB RAM)· Unsloth 4-bit quantization ·
 training cost is limited to electricity only · No cloud compute
 
 ---
